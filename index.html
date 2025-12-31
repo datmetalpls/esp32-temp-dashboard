@@ -82,7 +82,7 @@
 <script>
   // ====== CONFIGURA ESTO ======
   const FN = "https://uqfjgsjaqnoiytukprby.functions.supabase.co/read-temp";
-  const DASH_KEY = "TU_DASHBOARD_KEY_REAL";
+  const DASH_KEY = "julcerugu";
   // ============================
 
   let chart;
@@ -97,7 +97,15 @@
 
   async function fetchData(device_id){
     // pedimos suficientes puntos para 60min (según tu frecuencia de envío)
-    const url = `${FN}?device_id=${encodeURIComponent(device_id)}&limit=600`;
+  function limitForRange(minutes){
+  if (minutes <= 15) return 200;
+  if (minutes <= 30) return 400;
+  return 800; // 60 min
+}
+  const minutes = Number(document.getElementById("range").value) || 30;
+  const limit = limitForRange(minutes);
+  const url = `${FN}?device_id=${encodeURIComponent(device_id)}&limit=${limit}`;
+    
     const r = await fetch(url, { headers: { "x-dashboard-key": DASH_KEY } });
     if (!r.ok) throw new Error(`HTTP ${r.status}`);
     return r.json();
@@ -239,3 +247,4 @@
 
 </body>
 </html>
+
