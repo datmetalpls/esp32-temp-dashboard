@@ -43,3 +43,199 @@
         <select id="range">
           <option value="15">Últimos 15 min</option>
           <option value="30" selected>Últimos 30 min</option>
+          <option value="60">Últimos 60 min</option>
+        </select>
+      </div>
+
+      <div style="padding-top:18px">
+        <button onclick="loadOnce()">Actualizar</button>
+      </div>
+
+      <div class="muted" style="padding-top:18px">
+        Refresco automático: 3s
+      </div>
+    </div>
+
+    <div style="margin-top:14px">
+      <div class="muted">Temperatura actual</div>
+      <div id="temp" class="big">--.- °C</div>
+      <div>Estado: <span id="state">--</span></div>
+      <div class="muted">Última actualización: <span id="ts">--</span></div>
+    </div>
+  </div>
+
+  <div id="alarmBox" class="alarmBox">
+    <div style="font-weight:800; font-size:16px">ALARMA DE TEMPERATURA</div>
+    <div>Se superó el umbral (&gt; 28°C).</div>
+  </div>
+
+  <div class="card">
+    <div class="row" style="justify-content:space-between">
+      <h3 style="margin:0">Histórico reciente</h3>
+      <div class="muted">Fuente: temperature_log</div>
+    </div>
+    <div style="margin-top:10px">
+      <canvas id="chart" height="120"></canvas>
+    </div>
+  </div>
+
+<script>
+  // ====== CONFIGURA ESTO ======
+  const FN = "https://uqfjgsjaqnoiytukprby.functions.supabase.co/read-temp";
+  const DASH_KEY = "TU_DASHBOARD_KEY_REAL";
+  // ============================
+
+  let chart;
+  let prevAlarm = null;
+  let audioCtx = null;
+
+  function fmtTs(iso){
+    try { return new Date(iso).toLocaleString(); } catch { return iso; }
+  }
+
+  function nowMs(){ return Date.now(); }
+
+  async function fetchData(device_id){
+    // pedimos suficientes puntos para 60min (según tu frecuencia de envío)
+    const url = `${FN}?device_id=${encodeURIComponent(device_id)}&limit=600`;
+    const r = await fetch(url, { headers: { "x-dashboard-key": DASH_KEY } });
+    if (!r.ok) throw new Error(`HTTP ${r.status}`);
+    return r.json();
+  }
+
+  function setBadge(alarm){
+    const badge = document.getElementById("badge");
+    if (alarm === true){
+      badge.textContent = "ALARMA";
+      badge.className = "badge badge-alarm";
+    } else if (alarm === false){
+      badge.textContent = "NORMAL";
+      badge.className = "badge badge-ok";
+    } else {
+      badge.textContent = "--";
+      badge.className = "badge";
+    }
+  }
+
+  function showAlarmBox(show){
+    const box = document.getElementById("alarmBox");
+    box.className = show ? "alarmBox show" : "alarmBox";
+  }
+
+  function beepOnce(){
+    // Beep web simple con WebAudio (sin archivos). Requiere interacción previa en algunos navegadores.
+    try{
+      if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+      const o = audioCtx.createOscillator();
+      const g = audioCtx.createGain();
+      o.type = "sine";
+      o.frequency.value = 880;
+      g.gain.value = 0.06;
+      o.connect(g); g.connect(audioCtx.destination);
+      o.start();
+      setTimeout(() => { o.stop(); }, 220);
+    } catch(e){
+      // si el navegador bloquea audio, no hacemos nada
+    }
+  }
+
+  function alarmTransitionCheck(currentAlarm){
+    // beep solo cuando cambia a ALARMA (false -> true)
+    if (prevAlarm === false && currentAlarm === true){
+      showAlarmBox(true);
+      beepOnce();
+    }
+    // ocultar caja si vuelve a normal
+    if (currentAlarm === false){
+      showAlarmBox(false);
+    }
+    prevAlarm = currentAlarm;
+  }
+
+  function filterByMinutes(points, minutes){
+    const cutoff = nowMs() - (minutes * 60 * 1000);
+    return points.filter(p => {
+      const t = Date.parse(p.created_at);
+      return !Number.isNaN(t) && t >= cutoff;
+    });
+  }
+
+  function upsertChart(labels, values){
+    const ctx = document.getElementById("chart");
+    if (!chart){
+      chart = new Chart(ctx, {
+        type: "line",
+        data: { labels, datasets: [{ label: "Temp °C", data: values }] },
+        options: {
+          responsive: true,
+          animation: false,
+          scales: {
+            x: { display: false },
+            y: { beginAtZero: false }
+          }
+        }
+      });
+    } else {
+      chart.data.labels = labels;
+      chart.data.datasets[0].data = values;
+      chart.update();
+    }
+  }
+
+  async function loadOnce(){
+    const device_id = document.getElementById("device").value.trim();
+    const minutes = Number(document.getElementById("range").value) || 30;
+    if (!device_id) return;
+
+    try{
+      const j = await fetchData(device_id);
+
+      const latest = j.latest;
+      const ptsAll = j.points || [];
+
+      if (latest){
+        const temp = Number(latest.temp_c);
+        const alarm = !!latest.alarm;
+
+        document.getElementById("temp").textContent = `${temp.toFixed(1)} °C`;
+
+        const st = document.getElementById("state");
+        st.textContent = alarm ? "ALARMA (>28)" : "NORMAL";
+        st.className = alarm ? "badge-alarm" : "badge-ok";
+
+        document.getElementById("ts").textContent = fmtTs(latest.created_at);
+
+        setBadge(alarm);
+        alarmTransitionCheck(alarm);
+      } else {
+        document.getElementById("temp").textContent = `--.- °C`;
+        document.getElementById("state").textContent = `SIN DATOS`;
+        document.getElementById("ts").textContent = `--`;
+        setBadge(null);
+      }
+
+      const pts = filterByMinutes(ptsAll, minutes);
+      const labels = pts.map(p => p.created_at);
+      const values = pts.map(p => Number(p.temp_c));
+      upsertChart(labels, values);
+
+    } catch(e){
+      setBadge(null);
+      document.getElementById("state").textContent = `ERROR (${e.message})`;
+      document.getElementById("state").className = "badge-alarm";
+    }
+  }
+
+  // habilita audio tras la primera interacción del usuario (mejora compatibilidad)
+  document.addEventListener("click", () => {
+    if (!audioCtx){
+      try { audioCtx = new (window.AudioContext || window.webkitAudioContext)(); } catch {}
+    }
+  }, { once: true });
+
+  setInterval(loadOnce, 3000);
+  loadOnce();
+</script>
+
+</body>
+</html>
