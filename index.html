@@ -6,162 +6,219 @@
 <title>ESP32 Temp Dashboard</title>
 <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
 <style>
-body{font-family:Arial;margin:18px;max-width:980px}
-.card{border:1px solid #ddd;border-radius:12px;padding:14px;margin-bottom:14px}
-.row{display:flex;gap:12px;flex-wrap:wrap;align-items:center}
-.big{font-size:44px;font-weight:800}
-.muted{color:#666}
-input,select,button{padding:8px 10px;border-radius:10px;border:1px solid #ccc}
-button{cursor:pointer}
-.badge{padding:6px 10px;border-radius:999px;font-weight:700;font-size:12px}
-.badge-ok{background:#e8fff3;color:#0b6}
-.badge-alarm{background:#ffe8ea;color:#b00020}
-.alarmBox{border:2px solid #b00020;background:#ffe8ea;color:#b00020;
-border-radius:12px;padding:12px;display:none}
-.alarmBox.show{display:block}
-.small{font-size:12px}
+  body{font-family:Arial;margin:18px;max-width:980px}
+  .card{border:1px solid #ddd;border-radius:12px;padding:14px;margin-bottom:14px}
+  .row{display:flex;gap:12px;flex-wrap:wrap;align-items:center}
+  .big{font-size:44px;font-weight:800}
+  .muted{color:#666}
+  select,button{padding:8px 10px;border-radius:10px;border:1px solid #ccc}
+  button{cursor:pointer}
+  .badge{padding:6px 10px;border-radius:999px;font-weight:700;font-size:12px}
+  .badge-ok{background:#e8fff3;color:#0b6}
+  .badge-alarm{background:#ffe8ea;color:#b00020}
+  .alarmBox{border:2px solid #b00020;background:#ffe8ea;color:#b00020;border-radius:12px;padding:12px;display:none}
+  .alarmBox.show{display:block}
+  .small{font-size:12px}
 </style>
 </head>
 <body>
 
 <div class="card">
-<h2>Monitor Temperatura <span id="badge" class="badge">--</span></h2>
+  <h2>Monitor Temperatura <span id="badge" class="badge">--</span></h2>
 
-<div class="row">
-<input id="device" value="esp32-lab-01">
-<select id="range">
-<option value="3">3 min</option>
-<option value="5">5 min</option>
-<option value="10">10 min</option>
-<option value="15">15 min</option>
-<option value="30" selected>30 min</option>
-<option value="60">60 min</option>
-</select>
+  <div class="row">
+    <select id="range">
+      <option value="3">3 min</option>
+      <option value="5">5 min</option>
+      <option value="10">10 min</option>
+      <option value="15">15 min</option>
+      <option value="30" selected>30 min</option>
+      <option value="60">60 min</option>
+    </select>
 
-<select id="smooth">
-<option value="1">Sin suavizar</option>
-<option value="3" selected>MM 3</option>
-<option value="5">MM 5</option>
-<option value="9">MM 9</option>
-</select>
+    <select id="smooth">
+      <option value="1">Sin suavizar</option>
+      <option value="3" selected>MM 3</option>
+      <option value="5">MM 5</option>
+      <option value="9">MM 9</option>
+    </select>
 
-<button onclick="loadOnce()">Actualizar</button>
-<button onclick="exportCSV()">Exportar CSV</button>
-</div>
+    <button onclick="loadOnce()">Actualizar</button>
+    <button onclick="exportCSV()">Exportar CSV</button>
+  </div>
 
-<div class="big" id="temp">--.- °C</div>
-<div>Estado: <span id="state">--</span></div>
-<div class="muted">Última lectura: <span id="ts">--</span></div>
+  <div class="big" id="temp">--.- °C</div>
+  <div>Estado: <span id="state">--</span></div>
+  <div class="muted">Última lectura: <span id="ts">--</span></div>
 </div>
 
 <div id="alarmBox" class="alarmBox">⚠ ALARMA: temperatura &gt; 28 °C</div>
 
 <div class="card">
-<canvas id="chart" height="120"></canvas>
-<div class="muted small">Puntos rojos = alarma · Línea punteada = umbral 28 °C</div>
+  <canvas id="chart" height="120"></canvas>
+  <div class="muted small">
+    Puntos rojos = alarmas · Zonas sombreadas = periodo en alarma · Línea punteada = umbral 28 °C
+  </div>
 </div>
 
 <script>
 // ===== CONFIG =====
 const FN="https://TU_PROJECT_REF.functions.supabase.co/read-temp";
 const DASH_KEY="julcerugu";
+const DEVICE_ID="esp32-lab-01";
 const THRESHOLD=28.0;
 // ==================
 
 let chart, prevAlarm=null, audioCtx=null, lastPoints=[];
 
+// Plugin para sombrear periodos donde alarm=true
+const alarmShadePlugin = {
+  id: "alarmShade",
+  beforeDatasetsDraw(chart, args, pluginOptions){
+    const {ctx, chartArea, scales} = chart;
+    if (!chartArea) return;
+    const {left, right, top, bottom} = chartArea;
+
+    const alarms = pluginOptions.alarms || [];
+    if (!alarms.length) return;
+
+    // Dibujar bandas verticales entre puntos consecutivos en alarma
+    ctx.save();
+    ctx.fillStyle = "rgba(176, 0, 32, 0.10)"; // sombreado tenue rojo
+
+    for (let i = 0; i < alarms.length - 1; i++){
+      if (alarms[i] !== true) continue;
+
+      const x1 = scales.x.getPixelForValue(i);
+      const x2 = scales.x.getPixelForValue(i + 1);
+
+      const start = Math.max(left, Math.min(x1, x2));
+      const end   = Math.min(right, Math.max(x1, x2));
+
+      if (end > start){
+        ctx.fillRect(start, top, end - start, bottom - top);
+      }
+    }
+    ctx.restore();
+  }
+};
+
+Chart.register(alarmShadePlugin);
+
 function limitForRange(m){
-if(m<=3)return 40;
-if(m<=5)return 80;
-if(m<=10)return 160;
-if(m<=15)return 200;
-if(m<=30)return 400;
-return 800;
+  if(m<=3)return 40;
+  if(m<=5)return 80;
+  if(m<=10)return 160;
+  if(m<=15)return 200;
+  if(m<=30)return 400;
+  return 800;
 }
 
 function movingAverage(v,w){
-if(w<=1)return v;
-let o=[],s=0,q=[];
-v.forEach(x=>{q.push(x);s+=x;if(q.length>w)s-=q.shift();o.push(s/q.length)});
-return o;
+  if(w<=1) return v;
+  let o=[], s=0, q=[];
+  v.forEach(x=>{
+    q.push(x); s+=x;
+    if(q.length>w) s-=q.shift();
+    o.push(s/q.length);
+  });
+  return o;
 }
 
 function beep(){
-try{
-audioCtx??=new (window.AudioContext||window.webkitAudioContext)();
-const o=audioCtx.createOscillator(),g=audioCtx.createGain();
-o.frequency.value=880;g.gain.value=0.05;
-o.connect(g);g.connect(audioCtx.destination);
-o.start();setTimeout(()=>o.stop(),200);
-}catch{}
+  try{
+    audioCtx ??= new (window.AudioContext||window.webkitAudioContext)();
+    const o=audioCtx.createOscillator(), g=audioCtx.createGain();
+    o.frequency.value=880; g.gain.value=0.05;
+    o.connect(g); g.connect(audioCtx.destination);
+    o.start(); setTimeout(()=>o.stop(),200);
+  }catch{}
 }
 
 async function loadOnce(){
-const dev=device.value;
-const min=Number(range.value);
-const smooth=Number(smoothSel.value);
+  const min=Number(range.value);
+  const smoothW=Number(smoothSel.value);
 
-const url=`${FN}?device_id=${encodeURIComponent(dev)}&limit=${limitForRange(min)}`;
-const r=await fetch(url,{headers:{"x-dashboard-key":DASH_KEY}});
-if(!r.ok)throw new Error(r.status);
-const j=await r.json();
-lastPoints=j.points||[];
+  const url=`${FN}?device_id=${encodeURIComponent(DEVICE_ID)}&limit=${limitForRange(min)}`;
+  const r=await fetch(url,{headers:{"x-dashboard-key":DASH_KEY}});
+  if(!r.ok) throw new Error(r.status);
+  const j=await r.json();
 
-if(j.latest){
-const a=!!j.latest.alarm;
-temp.textContent=`${j.latest.temp_c.toFixed(1)} °C`;
-state.textContent=a?"ALARMA":"NORMAL";
-state.className=a?"badge badge-alarm":"badge badge-ok";
-badge.textContent=state.textContent;
-badge.className=state.className;
-ts.textContent=new Date(j.latest.created_at).toLocaleString();
+  lastPoints=j.points||[];
 
-if(prevAlarm===false && a===true){alarmBox.classList.add("show");beep();}
-if(!a)alarmBox.classList.remove("show");
-prevAlarm=a;
-}
+  if(j.latest){
+    const a=!!j.latest.alarm;
+    temp.textContent=`${Number(j.latest.temp_c).toFixed(1)} °C`;
+    state.textContent=a?"ALARMA":"NORMAL";
+    state.className=a?"badge badge-alarm":"badge badge-ok";
+    badge.textContent=state.textContent;
+    badge.className=state.className;
+    ts.textContent=new Date(j.latest.created_at).toLocaleString();
 
-const labels=lastPoints.map(p=>p.created_at);
-const vals=lastPoints.map(p=>p.temp_c);
-const smoothVals=movingAverage(vals,smooth);
-const alarms=lastPoints.map(p=>p.alarm?p.temp_c:null);
-const threshold=labels.map(()=>THRESHOLD);
+    if(prevAlarm===false && a===true){ alarmBox.classList.add("show"); beep(); }
+    if(!a) alarmBox.classList.remove("show");
+    prevAlarm=a;
+  }
 
-if(!chart){
-chart=new Chart(chartEl,{type:"line",
-data:{labels,datasets:[
-{label:"Temp °C",data:smoothVals},
-{label:"Alarmas",data:alarms,showLine:false,pointRadius:6,
-pointBackgroundColor:"#b00020"},
-{label:"Umbral",data:threshold,borderDash:[6,6],pointRadius:0}
-]},
-options:{animation:false,scales:{x:{display:false}}}
-});
-}else{
-chart.data.labels=labels;
-chart.data.datasets[0].data=smoothVals;
-chart.data.datasets[1].data=alarms;
-chart.data.datasets[2].data=threshold;
-chart.update();
-}
+  const labels=lastPoints.map(p=>p.created_at);
+  const vals=lastPoints.map(p=>Number(p.temp_c));
+  const smoothVals=movingAverage(vals,smoothW);
+
+  // puntos rojos solo donde alarm=true
+  const alarmPoints=lastPoints.map(p=>p.alarm ? Number(p.temp_c) : null);
+
+  // bandera alarmas para sombreado (booleans)
+  const alarmFlags=lastPoints.map(p=>!!p.alarm);
+
+  const threshold=labels.map(()=>THRESHOLD);
+
+  if(!chart){
+    chart=new Chart(chartEl,{
+      type:"line",
+      data:{
+        labels,
+        datasets:[
+          {label:"Temp °C", data:smoothVals},
+          {label:"Alarmas", data:alarmPoints, showLine:false, pointRadius:6, pointBackgroundColor:"#b00020"},
+          {label:"Umbral", data:threshold, borderDash:[6,6], pointRadius:0}
+        ]
+      },
+      options:{
+        animation:false,
+        scales:{x:{display:false}},
+        plugins:{
+          alarmShade:{ alarms: alarmFlags }
+        }
+      }
+    });
+  } else {
+    chart.data.labels=labels;
+    chart.data.datasets[0].data=smoothVals;
+    chart.data.datasets[1].data=alarmPoints;
+    chart.data.datasets[2].data=threshold;
+
+    // actualizar sombreado
+    chart.options.plugins.alarmShade.alarms = alarmFlags;
+
+    chart.update();
+  }
 }
 
 function exportCSV(){
-if(!lastPoints.length){alert("Sin datos");return;}
-let csv="timestamp,temp_c,alarm\n";
-lastPoints.forEach(p=>{
-csv+=`${p.created_at},${p.temp_c},${p.alarm}\n`;
-});
-const blob=new Blob([csv],{type:"text/csv"});
-const a=document.createElement("a");
-a.href=URL.createObjectURL(blob);
-a.download="temperature_log.csv";
-a.click();
-URL.revokeObjectURL(a.href);
+  if(!lastPoints.length){ alert("Sin datos"); return; }
+  let csv="timestamp,temp_c,alarm\n";
+  lastPoints.forEach(p=>{
+    csv += `${p.created_at},${p.temp_c},${p.alarm}\n`;
+  });
+  const blob=new Blob([csv],{type:"text/csv"});
+  const a=document.createElement("a");
+  a.href=URL.createObjectURL(blob);
+  a.download=`temperature_log_${DEVICE_ID}.csv`;
+  a.click();
+  URL.revokeObjectURL(a.href);
 }
 
 // DOM refs
-const device=document.getElementById("device");
 const range=document.getElementById("range");
 const smoothSel=document.getElementById("smooth");
 const temp=document.getElementById("temp");
@@ -178,4 +235,3 @@ loadOnce();
 
 </body>
 </html>
-
